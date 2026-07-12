@@ -1,0 +1,148 @@
+// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel UpdateDisplacement
+#pragma kernel UpdateSimulation
+
+// Create a RenderTexture with enableRandomWrite flag and set it
+// with cs.SetTexture
+cbuffer PerFrameData : register(b0)
+{
+    int OutputWidth; //4
+    int OutputHeight; //8
+    float TilingWidth; //12
+    float TilingHeight; //16 bytes
+
+};
+struct Disturbances
+{
+    float2 location;
+    float horizontalRadius;
+    float verticalRadius;
+};
+
+
+
+RWTexture2D<float4> DisplacementOutput;
+
+
+//Set Every Frame
+Texture2D<float4> PrevSimulationTexture;
+SamplerState samplerPrevSimulationTexture;
+
+
+//Set Once
+Texture2D<float4> WaterHeightTexture;
+SamplerState samplerWaterHeightTexture;
+
+
+//WaterManager Items
+float Time;
+StructuredBuffer<Disturbances> disturbances;
+StructuredBuffer<int> activeIndices;
+int activeIndicesCount;
+float DeltaTime;
+
+//Self Contained Constraints (for now)
+float windSpeed = 0.1;
+float dampening = 0.4;
+float foamGenerationRate = 0.2;
+float displacementHeight = -3.0;
+float foamDecayRate = 0.9;
+float2 windDirection = float2(0.6f, 0.8f);
+float windMuli = 0.3;
+
+
+//R - Previous Height + Procededural Influence| G - Static Displacement
+[numthreads(8, 8,1)]
+void UpdateDisplacement (uint3 id : SV_DispatchThreadID)
+{
+    float staticDisplacement = 0;
+    
+    float2 uv = float2(
+        id.x / (float)OutputWidth,
+        id.y / (float)OutputHeight
+    );
+
+    uv += windDirection * Time;
+
+    // Sample the height texture with proper UV coordinates
+    float windEffect = WaterHeightTexture.SampleLevel(samplerWaterHeightTexture, uv, 0).r;
+
+    // Get previous height from simulation (starts at 0 from black texture)
+    float prevHeight = PrevSimulationTexture.Load(int3(id.xy, 0)).g;
+
+    for (int i = 0; i < activeIndicesCount; i++)
+    {
+        Disturbances disturbance = disturbances[activeIndices[i]];
+
+        float2 d = disturbance.location - float2(id.x, id.y);
+
+        float ellipse =
+            (d.x * d.x) / (disturbance.horizontalRadius * disturbance.horizontalRadius) +
+            (d.y * d.y) / (disturbance.verticalRadius * disturbance.verticalRadius);
+
+        if (ellipse <= 1.0f)
+        {
+            staticDisplacement = 1.0f;
+            break;
+        }
+    }
+    
+    float height = prevHeight + windEffect * windMuli;
+
+    DisplacementOutput[id.xy] = float4(height, staticDisplacement, 0, 0);
+}
+
+
+
+RWTexture2D<float4> CurrentSimulation;
+
+
+
+//Format - R-> Velocity | G-> Height | B -> Foam Level | A -> Blank Space
+[numthreads(8, 8,1)]
+void UpdateSimulation(uint3 id : SV_DispatchThreadID)
+{
+    int x = id.x;
+    int y = id.y;
+
+    int westX  = max(x - 1, 0);
+    int eastX  = min(x + 1, OutputWidth - 1);
+    int southY = max(y - 1, 0);
+    int northY = min(y + 1, OutputHeight - 1);
+    
+    float oldV = PrevSimulationTexture.Load(int3(id.xy, 0)).r;
+    float oldFoam = PrevSimulationTexture.Load(int3(id.xy, 0)).b;
+
+    float4 displacementCenter = DisplacementOutput.Load(int2(id.xy));
+    float H = displacementCenter.g == 1.0 ? displacementHeight : displacementCenter.r;
+
+    float4 north = DisplacementOutput.Load(int2(x, northY));
+    float Hn = north.g == 1.0 ? displacementHeight : north.r;
+
+    float4 south = DisplacementOutput.Load(int2(x, southY));
+    float Hs = south.g == 1.0 ? displacementHeight : south.r;
+
+    float4 east = DisplacementOutput.Load(int2(eastX, y));
+    float He = east.g == 1.0 ? displacementHeight : east.r;
+
+    float4 west = DisplacementOutput.Load(int2(westX, y));
+    float Hw = west.g == 1.0 ? displacementHeight : west.r;
+
+    //Velocity
+    float average = (Hn + Hs + He + Hw) / 4.0f;
+    float pressure = (average - H);
+    
+    float finalVelocity = oldV + (pressure) * DeltaTime;
+    finalVelocity *= exp(-dampening * DeltaTime);
+    float acceleration = (finalVelocity - oldV) / DeltaTime;
+    
+    //foam
+    float foam = oldFoam - DeltaTime * foamDecayRate;
+    foam += abs(acceleration) * foamGenerationRate * DeltaTime;
+    foam = clamp(foam, 0.0f, 1.0f);
+
+    //height
+    float height = H + finalVelocity * DeltaTime;
+
+    CurrentSimulation[id.xy] = float4(finalVelocity, height, foam, 1.0f);
+}
