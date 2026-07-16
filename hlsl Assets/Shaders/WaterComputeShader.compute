@@ -142,7 +142,7 @@ void UpdateSimulation(uint3 id : SV_DispatchThreadID)
     foam = clamp(foam, 0.0f, 1.0f);
 
     //height
-    float height = H + finalVelocity * DeltaTime;
+    float height = H + finalVelocity;
 
     CurrentSimulation[id.xy] = float4(finalVelocity, height, foam, 1.0f);
 }

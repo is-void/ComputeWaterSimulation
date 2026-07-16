@@ -1,17 +1,11 @@
-// Each #kernel tells which function to compile; you can have many kernels
 #pragma kernel UpdateDisplacement
 #pragma kernel UpdateSimulation
 
-// Create a RenderTexture with enableRandomWrite flag and set it
-// with cs.SetTexture
-cbuffer PerFrameData : register(b0)
-{
-    int OutputWidth; //4
-    int OutputHeight; //8
-    float HorizonalTilingMulti; //12
-    float VerticalTilingMulti; //16
+//Todo
+//Clamp water-midline to be 0.5 or something (so there can be negative heights that aren't 0')
+//Clamp boost from "wind to 0.2-0.8 ranges"
+//Clean up simulation code (fix all green rendering bug)
 
-};
 struct Disturbances
 {
     float2 location;
@@ -19,6 +13,10 @@ struct Disturbances
     float verticalRadius;
 };
 
+int OutputWidth; 
+int OutputHeight; 
+float HorizonalTilingMulti; 
+float VerticalTilingMulti; 
 
 
 RWTexture2D<float4> DisplacementOutput;
@@ -32,6 +30,9 @@ SamplerState samplerPrevSimulationTexture;
 //Set Once
 Texture2D<float4> WaterHeightTexture;
 SamplerState samplerWaterHeightTexture;
+Texture2D<float4> WaterHeightTexture2;
+SamplerState samplerWaterHeightTexture2;
+
 
 
 //WaterManager Items
@@ -40,40 +41,46 @@ StructuredBuffer<Disturbances> disturbances;
 StructuredBuffer<int> activeIndices;
 int activeIndicesCount;
 float DeltaTime;
+float SimulationSpeed;
 
 //Self Contained Constraints (for now)
-float windSpeed = 0.1;
-float dampening = 0.4;
-float foamGenerationRate = 0.2;
-float displacementHeight = -3.0;
-float foamDecayRate = 0.9;
-float2 windDirection = float2(0.6f, 0.8f);
-float windMulti = 0.3;
-float simulationSpeed = 0.05;
+static const float windSpeed = 0.1;
+static const float dampening = 0.99;
+static const float foamGenerationRate = 0.2;
+static const float displacementHeight = 0.2;
+static const float foamDecayRate = 0.9;
+static const float2 windDirection = float2(0.6f, 0.8f);
+static const float windMulti = 0.3;
+static const float restHeight = 0.5;
+static const float restorativeForce = 1;
+static const float energylossMulti = 0.99;
 
 
-
-//R - Previous Height + Procededural Influence| G - Static Displacement
+//R - Previous Height| G  - Procededural Influence| B - Static Displacement
 [numthreads(8, 8,1)]
 void UpdateDisplacement (uint3 id : SV_DispatchThreadID)
 {
     
     float staticDisplacement = 0;
+
+    float2 uv = float2(
+    fmod(id.x * HorizonalTilingMulti, OutputWidth)/(float)OutputWidth,
+    fmod(id.y * VerticalTilingMulti, OutputHeight)/(float)OutputHeight);
+   
+    float2 windOffset = normalize(windDirection) * windSpeed * Time;
     
+    // Create multiple offset samples for variation
+    float2 uv1 = uv + windOffset;
+    float2 uv2 = uv.yy - windOffset * 0.7f + float2(0.13f, 0.27f);
+    float2 uv3 = uv.yx + windOffset * 1.3f - float2(0.19f, 0.11f);
+    float2 uv4 = uv.xx - windOffset * 0.5f + float2(-0.08f, 0.15f);
 
-   float2 uv = float2(
-    (id.x * HorizonalTilingMulti)/ (float)OutputWidth,
-    (id.y * VerticalTilingMulti)/ (float)OutputHeight
-    );
-
-    uv += windDirection * Time;
-
-    float windEffect = WaterHeightTexture.SampleLevel(samplerWaterHeightTexture, uv, 0).r;
+    float windEffect = clamp(WaterHeightTexture.SampleLevel(samplerWaterHeightTexture, uv1, 0).r - 0.5, 0, 1) * 0.4f;
+    windEffect += clamp(WaterHeightTexture2.SampleLevel(samplerWaterHeightTexture2, uv2.yx, 0).r - 0.5, 0, 1) * 0.3f;
+    windEffect += clamp(WaterHeightTexture.SampleLevel(samplerWaterHeightTexture, uv3, 0).r - 0.5, 0, 1) * 0.2f;
+    windEffect += clamp(WaterHeightTexture2.SampleLevel(samplerWaterHeightTexture2, uv4.yx, 0).r - 0.5, 0, 1) * 0.1f;
 
     float prevHeight = PrevSimulationTexture.Load(int3(id.xy, 0)).g;
-
-
-   
 
     for (int i = 0; i < activeIndicesCount; i++)
     {
@@ -93,11 +100,17 @@ void UpdateDisplacement (uint3 id : SV_DispatchThreadID)
     }
     
 
-    //DisplacementOutput[id.xy] = float4(prevHeight + windEffect * windMulti, staticDisplacement, 0, 0);
+    DisplacementOutput[id.xy] = float4(clamp(prevHeight, 0, 1), windEffect * windMulti, staticDisplacement, 1);
 
     //Sanity Check
-    DisplacementOutput[id.xy] = WaterHeightTexture.SampleLevel(samplerWaterHeightTexture, uv, 0);
-    
+
+
+
+    //if(uv.x <= 0.5)
+      //  DisplacementOutput[id.xy] = float4(1, 1, 1, 1);
+    //else
+      //  DisplacementOutput[id.xy] =  float4(windEffect, 1, 1, 1);
+  
 }
 
 
@@ -115,50 +128,51 @@ void UpdateSimulation(uint3 id : SV_DispatchThreadID)
 
     int westX  = max(x - 1, 0);
     int eastX  = min(x + 1, OutputWidth - 1);
-    int southY = max(y - 1, 0);
+    int southY = max(y - 1, 0); 
     int northY = min(y + 1, OutputHeight - 1);
-    float oldV = PrevSimulationTexture.Load(int3(id.xy, 0)).r;
+    float oldV = PrevSimulationTexture.Load(int3(id.xy, 0)).r *  energylossMulti;
+
     float oldFoam = PrevSimulationTexture.Load(int3(id.xy, 0)).b;
 
     float4 displacementCenter = DisplacementOutput.Load(int2(id.xy));
-    float H = displacementCenter.g == 1.0 ? displacementHeight : displacementCenter.r;
+    float H = displacementCenter.b == 1.0 ? displacementHeight : displacementCenter.r + displacementCenter.g;
 
     float4 north = DisplacementOutput.Load(int2(x, northY));
-    float Hn = north.g == 1.0 ? displacementHeight : north.r;
+    float Hn = north.b == 1.0 ? displacementHeight : north.r + north.g;
 
     float4 south = DisplacementOutput.Load(int2(x, southY));
-    float Hs = south.g == 1.0 ? displacementHeight : south.r;
+    float Hs = south.b == 1.0 ? displacementHeight : south.r + south.g;
 
     float4 east = DisplacementOutput.Load(int2(eastX, y));
-    float He = east.g == 1.0 ? displacementHeight : east.r;
+    float He = east.b == 1.0 ? displacementHeight : east.r + east.g;
 
 
     float4 west = DisplacementOutput.Load(int2(westX, y));
-    float Hw = west.g == 1.0 ? displacementHeight : west.r;
+    float Hw = west.b == 1.0 ? displacementHeight : west.r + west.g;
 
 
     //Velocity
     float average = (Hn + Hs + He + Hw)/4;
 
 
-    float pressure = (average - H);
+    float pressure = (average - H) - (H-restHeight) * restorativeForce;
     
-    float finalVelocity = oldV + (pressure) * simulationSpeed * DeltaTime;
-    finalVelocity *= exp(-dampening * simulationSpeed * DeltaTime);
-    float acceleration = (finalVelocity - oldV)/simulationSpeed * DeltaTime;
+    float finalVelocity = oldV + pressure * SimulationSpeed * DeltaTime;
+    //finalVelocity *= dampening;
+    float acceleration = abs(finalVelocity - oldV)/DeltaTime * SimulationSpeed;
     
     //foam
-    float foam = oldFoam - simulationSpeed * DeltaTime * foamDecayRate;
+    float foam = oldFoam - (DeltaTime * SimulationSpeed * foamDecayRate);
     
-    foam += abs(acceleration) * foamGenerationRate * simulationSpeed * DeltaTime;
+    foam += abs(acceleration) * foamGenerationRate * DeltaTime * SimulationSpeed;
     foam = clamp(foam, 0, 1);
 
     //height
-    float height = H + finalVelocity * simulationSpeed * DeltaTime;
+    float height = H + finalVelocity * DeltaTime * SimulationSpeed;
 
-    //CurrentSimulation[id.xy] =  float4(finalVelocity, height, foam, 1);
+    CurrentSimulation[id.xy] =  float4(finalVelocity, height, foam, 1);
     //Sanity test: Rendering DisplacementOutput
-    CurrentSimulation[id.xy] = DisplacementOutput.Load(int2(x, y));
+    //CurrentSimulation[id.xy] = DisplacementOutput.Load(int2(x, y));
        
     
 }

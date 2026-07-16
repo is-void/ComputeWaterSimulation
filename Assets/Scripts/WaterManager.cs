@@ -11,6 +11,7 @@ public class WaterManager : MonoBehaviour
     static readonly int WaterSimulationID = Shader.PropertyToID("_WaterSimulation");
     public ComputeShader waterCompute;
     public Texture2D waterHeightTexture;
+    public Texture2D waterHeightTexture2;
     public Material waterMaterial;
     public float textureScale = 10.0f;
 
@@ -57,7 +58,6 @@ public class WaterManager : MonoBehaviour
         outputSimTexture = CreateSimulationTexture(width, height);
         DisplacementTexture = CreateSimulationTexture(width, height);
 
-        // Initialize with black (we'll seed from height texture in first frame)
         Graphics.Blit(Texture2D.blackTexture, inputSimTexture);
         Graphics.Blit(Texture2D.blackTexture, outputSimTexture);
         Graphics.Blit(Texture2D.blackTexture, DisplacementTexture);
@@ -67,6 +67,8 @@ public class WaterManager : MonoBehaviour
 
         // Set sampler state for proper texture sampling
         waterCompute.SetTexture(displacementKernel, "WaterHeightTexture", waterHeightTexture);
+        waterCompute.SetTexture(displacementKernel, "WaterHeightTexture2", waterHeightTexture2);
+
         waterCompute.SetTexture(displacementKernel, "PrevSimulationTexture", inputSimTexture);
         waterCompute.SetTexture(displacementKernel, "DisplacementOutput", DisplacementTexture);
 
@@ -79,11 +81,12 @@ public class WaterManager : MonoBehaviour
         waterMaterial.SetTexture(WaterSimulationID, inputSimTexture);
 
         CreateDisturbanceBuffers();
+        waterCompute.SetFloat("SimulationSpeed", 10f);
 
         waterCompute.SetInt("OutputWidth", width);
         waterCompute.SetInt("OutputHeight", height);
-        waterCompute.SetFloat("HorizonalTilingMulti", textureScale * (waterHeightTexture.width/waterHeightTexture.height));
-        waterCompute.SetFloat("VerticalTilingMulti", textureScale * (waterHeightTexture.height/waterHeightTexture.width));
+        waterCompute.SetFloat("HorizonalTilingMulti", width/waterHeightTexture.width);
+        waterCompute.SetFloat("VerticalTilingMulti", height/waterHeightTexture.height);
 
     }
     private void Update()
@@ -176,6 +179,32 @@ public class WaterManager : MonoBehaviour
         tex.filterMode = FilterMode.Point;
         tex.wrapMode = TextureWrapMode.Clamp;
         tex.Create();
+
+        return tex;
+    }
+
+    RenderTexture CreateSimulationTexture(int width, int height, Color color)
+    {
+        RenderTexture tex = new RenderTexture(
+            width,
+            height,
+            0,
+            RenderTextureFormat.ARGBHalf
+        );
+
+        tex.enableRandomWrite = true;
+        tex.filterMode = FilterMode.Point;
+        tex.wrapMode = TextureWrapMode.Clamp;
+        tex.Create();
+
+        // Fill texture with the specified color
+        Texture2D colorTexture = new Texture2D(1, 1, TextureFormat.RGBA32, false);
+        colorTexture.SetPixel(0, 0, color);
+        colorTexture.Apply();
+
+        Graphics.Blit(colorTexture, tex);
+
+        Destroy(colorTexture);
 
         return tex;
     }
