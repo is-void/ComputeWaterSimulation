@@ -303,12 +303,12 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 7cc4598cd28f451409d9d7142bd010cb, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  waterSize: 2000
+  waterSize: 4000
   waterMaterial: {fileID: 2100000, guid: eb0a6e1c63e51d7438821b5054b18b70, type: 2}
   targetCamera: {fileID: 500154772}
-  maxDepth: 7
-  splitDistanceMultiplier: 2.5
-  patchResolution: 32
+  maxDepth: 8
+  splitDistanceMultiplier: 5
+  patchResolution: 64
   skirtDepth: 10
 --- !u!4 &124855413
 Transform:
@@ -338,10 +338,10 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   waterCompute: {fileID: 7200000, guid: b3ec1d82cc480f240b5400f38f372e94, type: 3}
-  waterHeightTexture: {fileID: 2800000, guid: 2a6b7622f2a264248b45fc48d25fe1f8, type: 3}
-  waterHeightTexture2: {fileID: 2800000, guid: 39bec6e0f3a706a4381b25f5551306e3, type: 3}
+  waterHeightTexture: {fileID: 2800000, guid: 300c2c298f626c140ad0d307ee95debc, type: 3}
+  waterHeightTexture2: {fileID: 2800000, guid: 2a6b7622f2a264248b45fc48d25fe1f8, type: 3}
   waterMaterial: {fileID: 2100000, guid: eb0a6e1c63e51d7438821b5054b18b70, type: 2}
-  textureScale: 1000
+  textureScale: 4000
 --- !u!1001 &128115001
 PrefabInstance:
   m_ObjectHideFlags: 0

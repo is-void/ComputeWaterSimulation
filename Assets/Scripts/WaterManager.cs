@@ -8,12 +8,18 @@ using UnityEngine;
 
 public class WaterManager : MonoBehaviour
 {
+
+    Transform camTransform;
+
     static readonly int WaterSimulationID = Shader.PropertyToID("_WaterSimulation");
     public ComputeShader waterCompute;
     public Texture2D waterHeightTexture;
     public Texture2D waterHeightTexture2;
     public Material waterMaterial;
-    public float textureScale = 10.0f;
+
+    public int size = 4000;
+    public float simDistance = 300;
+    public float textureScale = 1.0f;
 
     RenderTexture inputSimTexture;
     RenderTexture outputSimTexture;
@@ -24,8 +30,11 @@ public class WaterManager : MonoBehaviour
     List<Disturbances> disturbances = new();
     List<int> activeIndices = new List<int>(64);
     int displacementKernel, simulationKernel;
-    int width = 512;
-    int height = 512;
+    int playerDisturbanceID;
+    WaterMesh mesh; 
+
+
+
     [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
     struct Disturbances
     {
@@ -35,6 +44,14 @@ public class WaterManager : MonoBehaviour
     }
     private void Start()
     {
+        camTransform = Camera.main.transform;
+        
+        mesh = GetComponent<WaterMesh>();
+        mesh.Create();
+
+        float ratio = mesh.waterSize / size;
+        playerDisturbanceID = AddDisturbance(WorldPositionToShaderCoords(camTransform.position), 15, 15);
+
         if (waterHeightTexture == null)
         {
             Debug.LogError("Water height texture not assigned.");
@@ -54,9 +71,9 @@ public class WaterManager : MonoBehaviour
             Debug.LogWarning("WaterHeightTexture may not be readable. Consider enabling Read/Write in import settings.");
         }
 
-        inputSimTexture = CreateSimulationTexture(width, height);
-        outputSimTexture = CreateSimulationTexture(width, height);
-        DisplacementTexture = CreateSimulationTexture(width, height);
+        inputSimTexture = CreateSimulationTexture(size, size);
+        outputSimTexture = CreateSimulationTexture(size, size);
+        DisplacementTexture = CreateSimulationTexture(size, size);
 
         Graphics.Blit(Texture2D.blackTexture, inputSimTexture);
         Graphics.Blit(Texture2D.blackTexture, outputSimTexture);
@@ -83,30 +100,33 @@ public class WaterManager : MonoBehaviour
         CreateDisturbanceBuffers();
         waterCompute.SetFloat("SimulationSpeed", 10f);
 
-        waterCompute.SetInt("OutputWidth", width);
-        waterCompute.SetInt("OutputHeight", height);
-        waterCompute.SetFloat("HorizonalTilingMulti", width/waterHeightTexture.width);
-        waterCompute.SetFloat("VerticalTilingMulti", height/waterHeightTexture.height);
-
+        waterCompute.SetInt("OutputWidth", size);
+        waterCompute.SetInt("OutputHeight", size);
+        waterCompute.SetFloat("HorizonalTilingMulti", textureScale * (size/waterHeightTexture.width));
+        waterCompute.SetFloat("VerticalTilingMulti", textureScale * (size/ waterHeightTexture.height));
+        waterCompute.SetInt("simulationDistancePow", Mathf.RoundToInt(Mathf.Pow(simDistance * ratio, 2))); 
     }
     private void Update()
     {
+        ModifyDisturbance(playerDisturbanceID, WorldPositionToShaderCoords(camTransform.position), 15, 15);
         RenderLoop();
 
     }
     void RenderLoop()
     {
+        Vector2Int pLoc = WorldPositionToShaderCoords(camTransform.position);
 
         waterCompute.SetFloat("Time", Time.time);
         waterCompute.SetFloat("DeltaTime", Time.deltaTime);
+        waterCompute.SetFloats("PlayerLocation", pLoc.x, pLoc.y);
 
         //Displacment Pass
         UpdateDisturbanceBuffers();
 
-        waterCompute.Dispatch(displacementKernel, Mathf.CeilToInt(width / 8.0f), Mathf.CeilToInt(height / 8.0f), 1);
+        waterCompute.Dispatch(displacementKernel, Mathf.CeilToInt(size / 8.0f), Mathf.CeilToInt(size / 8.0f), 1);
 
         //Simulation Pass
-        waterCompute.Dispatch(simulationKernel, Mathf.CeilToInt(width / 8.0f), Mathf.CeilToInt(height / 8.0f), 1);
+        waterCompute.Dispatch(simulationKernel, Mathf.CeilToInt(size / 8.0f), Mathf.CeilToInt(size / 8.0f), 1);
 
         
 
@@ -183,31 +203,7 @@ public class WaterManager : MonoBehaviour
         return tex;
     }
 
-    RenderTexture CreateSimulationTexture(int width, int height, Color color)
-    {
-        RenderTexture tex = new RenderTexture(
-            width,
-            height,
-            0,
-            RenderTextureFormat.ARGBHalf
-        );
-
-        tex.enableRandomWrite = true;
-        tex.filterMode = FilterMode.Point;
-        tex.wrapMode = TextureWrapMode.Clamp;
-        tex.Create();
-
-        // Fill texture with the specified color
-        Texture2D colorTexture = new Texture2D(1, 1, TextureFormat.RGBA32, false);
-        colorTexture.SetPixel(0, 0, color);
-        colorTexture.Apply();
-
-        Graphics.Blit(colorTexture, tex);
-
-        Destroy(colorTexture);
-
-        return tex;
-    }
+    
     void CreateDisturbanceBuffers()
     {
         disturbanceBuffer = new ComputeBuffer(64, sizeof(float) * 4);
@@ -233,6 +229,35 @@ public class WaterManager : MonoBehaviour
         waterCompute.SetInt("activeIndicesCount", activeIndices.Count);
     }
 
+    public Vector2Int WorldPositionToShaderCoords(Vector3 worldPosition)
+    {
+        // Get the water mesh's world position and bounds
+        Vector3 meshPosition = mesh.transform.position;
+        Vector3 meshScale = mesh.transform.localScale;
+
+        // Calculate offset from mesh origin
+        Vector3 localPosition = worldPosition - meshPosition;
+
+        // Normalize to mesh bounds (assuming flat mesh with known size)
+        float meshWidth = mesh.waterSize * meshScale.x;
+        float meshHeight = mesh.waterSize * meshScale.z;
+
+        // Calculate normalized coordinates (0 to 1) relative to mesh
+        float normalizedX = localPosition.x / meshWidth;
+        float normalizedZ = localPosition.z / meshHeight;
+
+        // Clamp to valid range
+        normalizedX = Mathf.Clamp01(normalizedX + 0.5f);
+        normalizedZ = Mathf.Clamp01(normalizedZ + 0.5f);
+
+        // Convert to shader pixel coordinates
+        Vector2Int shaderCoords = new Vector2Int(
+            Mathf.RoundToInt(normalizedX * size),
+            Mathf.RoundToInt(normalizedZ * size)
+        );
+
+        return shaderCoords;
+    }
 
     public int AddDisturbance(Vector2 position, float horizontalRadius, float verticalRadius)
     {

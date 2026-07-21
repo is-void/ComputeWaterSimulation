@@ -4,7 +4,7 @@ using UnityEngine;
 public class WaterMesh : MonoBehaviour
 {
     [Header("Water")]
-    public float waterSize = 2000f;
+    public float waterSize = 500f;
     public Material waterMaterial;
 
     [Header("LOD")]
@@ -23,7 +23,7 @@ public class WaterMesh : MonoBehaviour
     private readonly List<GameObject> patchObjects = new();
 
 
-    void Start()
+    public void Create()
     {
         patchMesh = CreatePatchMesh();
 
@@ -60,6 +60,7 @@ public class WaterMesh : MonoBehaviour
 
         float splitDistance =
             patch.size * splitDistanceMultiplier;
+
 
 
         if (distance < splitDistance &&

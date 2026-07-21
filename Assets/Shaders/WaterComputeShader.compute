@@ -37,11 +37,13 @@ SamplerState samplerWaterHeightTexture2;
 
 //WaterManager Items
 float Time;
+float2 PlayerLocation;
 StructuredBuffer<Disturbances> disturbances;
 StructuredBuffer<int> activeIndices;
 int activeIndicesCount;
 float DeltaTime;
 float SimulationSpeed;
+float simulationDistancePow;
 
 //Self Contained Constraints (for now)
 static const float windSpeed = 0.1;
@@ -60,25 +62,30 @@ static const float energylossMulti = 0.99;
 [numthreads(8, 8,1)]
 void UpdateDisplacement (uint3 id : SV_DispatchThreadID)
 {
-    
+    int x = id.x;
+    int y = id.y;
+
+    float renderCheck = pow(x - PlayerLocation.x, 2) + pow(y - PlayerLocation.y, 2);
+
+    if (renderCheck >= simulationDistancePow)
+    {
+        DisplacementOutput[id.xy] = float4(0, 0, 0, 1);
+        return;
+    } 
+
+
     float staticDisplacement = 0;
 
     float2 uv = float2(
-    fmod(id.x * HorizonalTilingMulti, OutputWidth)/(float)OutputWidth,
-    fmod(id.y * VerticalTilingMulti, OutputHeight)/(float)OutputHeight);
-   
+    fmod(x * HorizonalTilingMulti, OutputWidth)/(float)OutputWidth,
+    fmod(y * VerticalTilingMulti, OutputHeight)/(float)OutputHeight);
+    
     float2 windOffset = normalize(windDirection) * windSpeed * Time;
     
-    // Create multiple offset samples for variation
     float2 uv1 = uv + windOffset;
-    float2 uv2 = uv.yy - windOffset * 0.7f + float2(0.13f, 0.27f);
-    float2 uv3 = uv.yx + windOffset * 1.3f - float2(0.19f, 0.11f);
-    float2 uv4 = uv.xx - windOffset * 0.5f + float2(-0.08f, 0.15f);
 
-    float windEffect = clamp(WaterHeightTexture.SampleLevel(samplerWaterHeightTexture, uv1, 0).r - 0.5, 0, 1) * 0.4f;
-    windEffect += clamp(WaterHeightTexture2.SampleLevel(samplerWaterHeightTexture2, uv2.yx, 0).r - 0.5, 0, 1) * 0.3f;
-    windEffect += clamp(WaterHeightTexture.SampleLevel(samplerWaterHeightTexture, uv3, 0).r - 0.5, 0, 1) * 0.2f;
-    windEffect += clamp(WaterHeightTexture2.SampleLevel(samplerWaterHeightTexture2, uv4.yx, 0).r - 0.5, 0, 1) * 0.1f;
+    float windEffect = clamp(WaterHeightTexture.SampleLevel(samplerWaterHeightTexture, uv1, 0).r - 0.5, 0, 1);
+   
 
     float prevHeight = PrevSimulationTexture.Load(int3(id.xy, 0)).g;
 
@@ -87,14 +94,13 @@ void UpdateDisplacement (uint3 id : SV_DispatchThreadID)
         Disturbances disturbance = disturbances[activeIndices[i]];
 
         float2 d = disturbance.location;
+        float2 delta = float2(x, y) - d;
+        
+        float ellipseCheck = pow(delta.x / disturbance.horizontalRadius, 2) + pow(delta.y / disturbance.verticalRadius, 2);
 
-        float ellipse =
-            (d.x * d.x) / (disturbance.horizontalRadius * disturbance.horizontalRadius) +
-            (d.y * d.y) / (disturbance.verticalRadius * disturbance.verticalRadius);
-
-        if (ellipse <= 1.0f)
+        if (ellipseCheck <= 1.0)
         {
-            staticDisplacement = 1.0f;
+            staticDisplacement = 1.0;
             break;
         }
     }
@@ -125,6 +131,16 @@ void UpdateSimulation(uint3 id : SV_DispatchThreadID)
 {
     int x = id.x;
     int y = id.y;
+
+    float renderCheck = pow(x - PlayerLocation.x, 2) + pow(y - PlayerLocation.y, 2);
+
+    if (renderCheck >= simulationDistancePow)
+    {
+        CurrentSimulation[id.xy] = float4(0, 0, 0, 1);
+        return;
+    } 
+    
+    
 
     int westX  = max(x - 1, 0);
     int eastX  = min(x + 1, OutputWidth - 1);
