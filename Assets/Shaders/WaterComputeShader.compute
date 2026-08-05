@@ -44,21 +44,23 @@ int activeIndicesCount;
 float DeltaTime;
 float SimulationSpeed;
 float simulationDistancePow;
+float2 windDirection;
 
 //Self Contained Constraints (for now)
-static const float windSpeed = 0.1;
-static const float dampening = 0.99;
-static const float foamGenerationRate = 0.2;
+static const float windSpeed = 0.005;
+static const float dampening = 0.999;
+static const float foamGenerationRate = 25;
 static const float displacementHeight = 0.2;
-static const float foamDecayRate = 0.9;
-static const float2 windDirection = float2(0.6f, 0.8f);
-static const float windMulti = 0.3;
+static const float foamDecayRate = 0.02;
+static const float windMulti = 0.4;
 static const float restHeight = 0.5;
-static const float restorativeForce = 1;
-static const float energylossMulti = 0.99;
+static const float restorativeForce = 0.05;
+static const float energylossMulti = 0.999;
 
 
 //R - Previous Height| G  - Procededural Influence| B - Static Displacement
+
+
 [numthreads(8, 8,1)]
 void UpdateDisplacement (uint3 id : SV_DispatchThreadID)
 {
@@ -83,8 +85,10 @@ void UpdateDisplacement (uint3 id : SV_DispatchThreadID)
     float2 windOffset = normalize(windDirection) * windSpeed * Time;
     
     float2 uv1 = uv + windOffset;
-
-    float windEffect = clamp(WaterHeightTexture.SampleLevel(samplerWaterHeightTexture, uv1, 0).r - 0.5, 0, 1);
+    float2 uv2 = uv - windOffset;
+    float wind1 = (WaterHeightTexture.SampleLevel(samplerWaterHeightTexture, uv1, 0).r - 0.1 )* 0.7;
+    float wind2 = (WaterHeightTexture.SampleLevel(samplerWaterHeightTexture, uv2, 0).r - 0.1 )* 0.3;
+    float windEffect = clamp(wind1 + wind2, 0, 1);
    
 
     float prevHeight = PrevSimulationTexture.Load(int3(id.xy, 0)).g;
@@ -115,7 +119,7 @@ void UpdateDisplacement (uint3 id : SV_DispatchThreadID)
     //if(uv.x <= 0.5)
       //  DisplacementOutput[id.xy] = float4(1, 1, 1, 1);
     //else
-      //  DisplacementOutput[id.xy] =  float4(windEffect, 1, 1, 1);
+      // DisplacementOutput[id.xy] =  float4(windEffect, 1, 1, 1);
   
 }
 
@@ -125,7 +129,7 @@ RWTexture2D<float4> CurrentSimulation;
 
 
 
-//Format - R-> Velocity | G-> Height | B -> Foam Level | A -> Blank Space
+//Format - R-> Velocity | G-> Height | B -> Foam Level | A -> Acceleration
 [numthreads(8, 8,1)]
 void UpdateSimulation(uint3 id : SV_DispatchThreadID)
 {
@@ -136,7 +140,7 @@ void UpdateSimulation(uint3 id : SV_DispatchThreadID)
 
     if (renderCheck >= simulationDistancePow)
     {
-        CurrentSimulation[id.xy] = float4(0, 0, 0, 1);
+        CurrentSimulation[id.xy] = float4(0, 0, 0, 0);
         return;
     } 
     
@@ -146,7 +150,8 @@ void UpdateSimulation(uint3 id : SV_DispatchThreadID)
     int eastX  = min(x + 1, OutputWidth - 1);
     int southY = max(y - 1, 0); 
     int northY = min(y + 1, OutputHeight - 1);
-    float oldV = PrevSimulationTexture.Load(int3(id.xy, 0)).r *  energylossMulti;
+    float oldV = PrevSimulationTexture.Load(int3(id.xy, 0)).r;
+    float oldAcc = PrevSimulationTexture.Load(int3(id.xy, 0)).a *  energylossMulti;
 
     float oldFoam = PrevSimulationTexture.Load(int3(id.xy, 0)).b;
 
@@ -166,29 +171,29 @@ void UpdateSimulation(uint3 id : SV_DispatchThreadID)
     float4 west = DisplacementOutput.Load(int2(westX, y));
     float Hw = west.b == 1.0 ? displacementHeight : west.r + west.g;
 
+    //Acceleration
+    float average = (Hn + Hs + He + Hw)/4;
+    float pressure = (average - H) - (H-restHeight) * restorativeForce;
+    float acceleration = oldAcc + pressure * DeltaTime;
+
 
     //Velocity
-    float average = (Hn + Hs + He + Hw)/4;
+    float finalVelocity = oldV + acceleration * dampening;
 
-
-    float pressure = (average - H) - (H-restHeight) * restorativeForce;
-    
-    float finalVelocity = oldV + pressure * SimulationSpeed * DeltaTime;
     //finalVelocity *= dampening;
-    float acceleration = abs(finalVelocity - oldV)/DeltaTime * SimulationSpeed;
     
     //foam
-    float foam = oldFoam - (DeltaTime * SimulationSpeed * foamDecayRate);
+    float foam = oldFoam - (DeltaTime * foamDecayRate);
     
-    foam += abs(acceleration) * foamGenerationRate * DeltaTime * SimulationSpeed;
+    foam += clamp(abs(acceleration) * foamGenerationRate, 0, 0.1);
     foam = clamp(foam, 0, 1);
 
     //height
-    float height = H + finalVelocity * DeltaTime * SimulationSpeed;
+    float height = H  +  finalVelocity * DeltaTime * SimulationSpeed;
 
-    CurrentSimulation[id.xy] =  float4(finalVelocity, height, foam, 1);
+    CurrentSimulation[id.xy] =  float4(finalVelocity, height, foam, acceleration);
     //Sanity test: Rendering DisplacementOutput
-    //CurrentSimulation[id.xy] = DisplacementOutput.Load(int2(x, y));
+   // CurrentSimulation[id.xy] = DisplacementOutput.Load(int2(x, y));
        
     
 }

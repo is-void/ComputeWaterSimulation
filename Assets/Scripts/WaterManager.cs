@@ -8,10 +8,20 @@ using UnityEngine;
 
 public class WaterManager : MonoBehaviour
 {
+    public Camera reflectionCamera;
+    public Camera refractionCamera;
+    public PlayerController playerController;
+    RenderTexture reflectionTexture;
+    RenderTexture refractionTexture;
 
+    public ReflectionProbe reflectionProbe;
+    
     Transform camTransform;
+    Camera mainCamera;
 
     static readonly int WaterSimulationID = Shader.PropertyToID("_WaterSimulation");
+    static readonly int WaterHeightID = Shader.PropertyToID("_WaterHeightMulti");
+    static readonly int ReflectionCubeID = Shader.PropertyToID("_ReflectionCube");
     public ComputeShader waterCompute;
     public Texture2D waterHeightTexture;
     public Texture2D waterHeightTexture2;
@@ -20,7 +30,9 @@ public class WaterManager : MonoBehaviour
     public int size = 4000;
     public float simDistance = 300;
     public float textureScale = 1.0f;
+    public float waterHeight;
 
+    public bool useCubeMap;
     RenderTexture inputSimTexture;
     RenderTexture outputSimTexture;
     RenderTexture DisplacementTexture;
@@ -31,9 +43,8 @@ public class WaterManager : MonoBehaviour
     List<int> activeIndices = new List<int>(64);
     int displacementKernel, simulationKernel;
     int playerDisturbanceID;
-    WaterMesh mesh; 
-
-
+    WaterMesh mesh;
+    private int reflectionResolution = 1028;
 
     [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
     struct Disturbances
@@ -44,13 +55,15 @@ public class WaterManager : MonoBehaviour
     }
     private void Start()
     {
-        camTransform = Camera.main.transform;
-        
+        mainCamera = Camera.main;
+        camTransform = mainCamera.transform;
+        CreateReflectionTexture();
+        CreateRefractionTexture();
         mesh = GetComponent<WaterMesh>();
         mesh.Create();
 
         float ratio = mesh.waterSize / size;
-        playerDisturbanceID = AddDisturbance(WorldPositionToShaderCoords(camTransform.position), 15, 15);
+        playerDisturbanceID = AddDisturbance(WorldPositionToShaderCoords(playerController.transform.position), 15, 15);
 
         if (waterHeightTexture == null)
         {
@@ -96,9 +109,10 @@ public class WaterManager : MonoBehaviour
         waterCompute.SetTexture(simulationKernel, "CurrentSimulation", outputSimTexture);
 
         waterMaterial.SetTexture(WaterSimulationID, inputSimTexture);
+        waterMaterial.SetFloat("_BaseWaterHeight", mesh.yPosition);
 
         CreateDisturbanceBuffers();
-        waterCompute.SetFloat("SimulationSpeed", 10f);
+        waterCompute.SetFloat("SimulationSpeed", 500f);
 
         waterCompute.SetInt("OutputWidth", size);
         waterCompute.SetInt("OutputHeight", size);
@@ -106,20 +120,108 @@ public class WaterManager : MonoBehaviour
         waterCompute.SetFloat("VerticalTilingMulti", textureScale * (size/ waterHeightTexture.height));
         waterCompute.SetInt("simulationDistancePow", Mathf.RoundToInt(Mathf.Pow(simDistance * ratio, 2))); 
     }
-    private void Update()
+    private void FixedUpdate()
     {
-        ModifyDisturbance(playerDisturbanceID, WorldPositionToShaderCoords(camTransform.position), 15, 15);
-        RenderLoop();
+        
+       
+        ModifyDisturbance(playerDisturbanceID, WorldPositionToShaderCoords(playerController.transform.position), 2, 2);
+        ShaderLoop();
 
     }
-    void RenderLoop()
+    private void LateUpdate()
+    {
+        UpdateCamera();
+        if (useCubeMap)
+            waterMaterial.SetTexture(ReflectionCubeID, reflectionProbe.texture);
+        else
+            waterMaterial.SetTexture("_ReflectionTexture", reflectionTexture);
+        waterMaterial.SetTexture("_RefractionTexture", refractionTexture);
+    }
+    void UpdateCamera()
+    {
+        waterHeight = waterMaterial.GetFloat(WaterHeightID);
+
+        Vector3 pos = mainCamera.transform.position;
+
+        // Reflection camera setup
+        Vector3 reflectedPos = pos;
+        reflectedPos.y = waterHeight + (waterHeight - pos.y);
+
+        reflectionCamera.transform.position = reflectedPos;
+
+        Vector3 euler = mainCamera.transform.eulerAngles;
+
+        reflectionCamera.transform.eulerAngles =
+        new Vector3(
+            -euler.x, euler.y, euler.z
+        );
+
+        Vector4 plane = new Vector4(
+            0, 1, 0, -waterHeight
+        );
+        Matrix4x4 view = reflectionCamera.worldToCameraMatrix;
+
+        Vector4 cameraPlane = Matrix4x4.Transpose(Matrix4x4.Inverse(view)) * plane;
+        reflectionCamera.projectionMatrix = mainCamera.CalculateObliqueMatrix(cameraPlane);
+
+        reflectionCamera.Render();
+
+        // Refraction camera setup 
+        refractionCamera.transform.position = pos;
+        refractionCamera.transform.eulerAngles = euler;
+        refractionCamera.projectionMatrix = mainCamera.projectionMatrix;
+        refractionCamera.Render();
+    }
+    void CreateReflectionTexture()
+    {
+        if (reflectionTexture != null)
+            return;
+
+        reflectionTexture = new RenderTexture(
+            reflectionResolution,
+            reflectionResolution,
+            24,
+            RenderTextureFormat.ARGBHalf
+        );
+
+        reflectionTexture.name = "Water Reflection";
+        reflectionTexture.useMipMap = false;
+        reflectionTexture.autoGenerateMips = false;
+
+        reflectionCamera.targetTexture = reflectionTexture;
+    }
+
+    void CreateRefractionTexture()
+    {
+        if (refractionTexture != null)
+            return;
+
+        refractionTexture = new RenderTexture(
+            reflectionResolution,
+            reflectionResolution,
+            24,
+            RenderTextureFormat.ARGBHalf
+        );
+
+        refractionTexture.name = "Water Refraction";
+        refractionTexture.useMipMap = false;
+        refractionTexture.autoGenerateMips = false;
+
+        refractionCamera.targetTexture = refractionTexture;
+    }
+    void ShaderLoop()
     {
         Vector2Int pLoc = WorldPositionToShaderCoords(camTransform.position);
+        Vector2 direction = new Vector2(0.6f, 0.4f).normalized;
+
+        float angle = 0f * Mathf.Sin(Time.time);
+
+        Vector2 rotated = Quaternion.Euler(0f, 0f, angle) * direction;
 
         waterCompute.SetFloat("Time", Time.time);
         waterCompute.SetFloat("DeltaTime", Time.deltaTime);
         waterCompute.SetFloats("PlayerLocation", pLoc.x, pLoc.y);
-
+        waterCompute.SetFloats("windDirection", rotated.x, rotated.y);
         //Displacment Pass
         UpdateDisturbanceBuffers();
 
@@ -128,33 +230,21 @@ public class WaterManager : MonoBehaviour
         //Simulation Pass
         waterCompute.Dispatch(simulationKernel, Mathf.CeilToInt(size / 8.0f), Mathf.CeilToInt(size / 8.0f), 1);
 
-        
-
-        //Swap textures
-        /*
-        RenderTexture temp = inputSimTexture;
-        inputSimTexture = outputSimTexture;
-        outputSimTexture = temp;
-
-        waterCompute.SetTexture(displacementKernel, "PrevSimulationTexture", outputSimTexture);
-        waterCompute.SetTexture(simulationKernel, "PrevSimulationTexture", outputSimTexture);
-        */
-
 
         waterMaterial.SetTexture(WaterSimulationID, outputSimTexture);
         inputSimTexture = outputSimTexture;
         waterCompute.SetTexture(displacementKernel, "PrevSimulationTexture", inputSimTexture);
         waterCompute.SetTexture(simulationKernel, "PrevSimulationTexture", inputSimTexture);
 
-        if(Input.GetKeyDown(KeyCode.Space))
+        /*if(Input.GetKeyDown(KeyCode.Space))
         {
-            TakeShaderSnapshot(inputSimTexture);
+            ExportRenderTextureSnapshot("water_snapshot", inputSimTexture);
         }
-
+        */
     }
 
     //Stores the output texture of the current frame in a png file
-    private void TakeShaderSnapshot(RenderTexture texture)
+    private void ExportRenderTextureSnapshot(string name, RenderTexture texture)
     {
         // Create a temporary Texture2D to read the RenderTexture data
         Texture2D snapshot = new Texture2D(texture.width, texture.height, TextureFormat.RGBA32, false);
@@ -175,7 +265,7 @@ public class WaterManager : MonoBehaviour
         
         // Create a filename with timestamp
         string timestamp = System.DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss");
-        string filePath = System.IO.Path.Combine(Application.persistentDataPath, $"water_snapshot_{timestamp}.png");
+        string filePath = System.IO.Path.Combine(Application.persistentDataPath, $"{name}_{timestamp}.png");
         
         // Write the PNG to disk
         System.IO.File.WriteAllBytes(filePath, pngData);
@@ -196,7 +286,7 @@ public class WaterManager : MonoBehaviour
         );
 
         tex.enableRandomWrite = true;
-        tex.filterMode = FilterMode.Point;
+        tex.filterMode = FilterMode.Trilinear;
         tex.wrapMode = TextureWrapMode.Clamp;
         tex.Create();
 
@@ -306,5 +396,7 @@ public class WaterManager : MonoBehaviour
         inputSimTexture?.Release();
         outputSimTexture?.Release();
         DisplacementTexture?.Release();
+        reflectionTexture?.Release();
+        refractionTexture?.Release();
     }
 }

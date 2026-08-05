@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using Unity.VisualScripting;
 using UnityEngine;
 
 public class WaterMesh : MonoBehaviour
@@ -6,6 +7,7 @@ public class WaterMesh : MonoBehaviour
     [Header("Water")]
     public float waterSize = 500f;
     public Material waterMaterial;
+    public float yPosition;
 
     [Header("LOD")]
     public Transform targetCamera;
@@ -152,10 +154,12 @@ public class WaterMesh : MonoBehaviour
             else
             {
                 go = new GameObject($"WaterPatch_{i}");
+                go.layer = LayerMask.NameToLayer("Water");
                 go.transform.parent = transform;
                 var mf = go.AddComponent<MeshFilter>();
                 mf.sharedMesh = patchMesh;
                 var mr = go.AddComponent<MeshRenderer>();
+                mr.reflectionProbeUsage = UnityEngine.Rendering.ReflectionProbeUsage.BlendProbes;
                 mr.sharedMaterial = waterMaterial;
                 patchObjects.Add(go);
             }
@@ -185,7 +189,7 @@ public class WaterMesh : MonoBehaviour
     Mesh CreatePatchMesh()
     {
         Mesh mesh = new Mesh();
-
+        
         int vertsPerSide = patchResolution + 1;
 
         List<Vector3> vertices = new();
@@ -205,7 +209,7 @@ public class WaterMesh : MonoBehaviour
                 vertices.Add(
                     new Vector3(
                         x * step - 0.5f,
-                        0,
+                        yPosition,
                         z * step - 0.5f
                     )
                 );
@@ -240,7 +244,7 @@ public class WaterMesh : MonoBehaviour
         mesh.RecalculateBounds();
         mesh.MarkDynamic();
         mesh.bounds = new Bounds(Vector3.zero, Vector3.one * 100f);
-
+        
         return mesh;
     }
 
